@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<launch>
+
+  <param name="robot_description" command="$(find xacro)/xacro --inorder '$(find kuka_kr5_support)/urdf/kr5_arc.xacro'" />
+
+  <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher" />
+
+  <arg name="config_file" value="$(find kr5_oscr)/config/kr5.rviz"/>
+  <node name="rviz" pkg="rviz" type="rviz" respawn="false" output="screen" args="-d $(arg config_file)"/>
+
+  <!-- This is used for showing the end-effector path -->
+  <param name="reference_frame" value="base_link" />
+
+</launch>
