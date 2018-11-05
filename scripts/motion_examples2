@@ -1,0 +1,99 @@
+#!/usr/bin/env python
+#
+# Generate kinematic motion to control the position/orientation of KUKA's
+# KR-5 robot
+#
+# To use it:
+#     1) roslaunch kr5_oscr display.launch
+#     2) + Option 1 (interactive):
+#          roscd kr5_oscr/scripts/motion; ipython -i motion_examples2
+#        + Option 2:
+#          rosrun kr5_oscr motion_examples2
+#
+
+
+import rospy
+import numpy as np
+import time
+
+from oscr.ros_kine_sim import RosKineSim
+from oscr.utils import incPoseLocal, setPose, incPosition
+
+# Two different motions (1 or 2)
+#  * flag=1 moves the end effector to a given pose
+#  * flag=2 moves the end effector along a line in operational space
+#  * flag=3 moves the end effector describing a circle
+flag = 1
+
+if __name__ == '__main__':
+
+    # This robot does not have a floating base
+    fbase = False
+    # Frequency
+    f = 100.0
+    # Robot simulation instance (choose as backend 'pin' or 'rbdl')
+    sim = RosKineSim('kr5ModelPy', 'kuka_kr5_support',
+                     '/urdf/kr5_arc.urdf', f, fbase, 'pin', show_markers=True)
+
+    # Set initial joint configuration
+    q = np.array([[0., -0.7, 1.5, 0., 0., 0.]]).T
+    sim.update(q)
+    # Initialize kinematic solver: use 'HQP' (default), 'NS' or 'WQP'
+    sim.initKineSolver(q, 'HQP')
+    # Tasks
+    sim.initKineTaskPose('link_6', 'pose', 'Hand', 1.0)
+
+    # Initialize logs
+    fsolvertime = open("/tmp/solvertime.txt", "w")
+    fhpos = open("/tmp/poseHand.txt", "w")
+    fhposdes = open("/tmp/poseHandDes.txt", "w")
+    fjoints  = open("/tmp/q.txt", "w")
+
+    if (flag==1):
+        # Set desired pose for the Hand (end effector)
+        currentPoseHand = sim.task['Hand'].getSensedValue()
+        desiredPoseHand = incPoseLocal(currentPoseHand,
+                                       (-0.50, 0.50, 0.50),
+                                       (70.0, (0.,1.,0.)))
+        sim.task['Hand'].setDesiredValue(desiredPoseHand)
+        # Add task to the solver
+        sim.pushTask(sim.task['Hand'])
+
+    if (flag==2):
+        # When using an interactive session (with ipython) and a single task,
+        # it is recommended to use doTask. After task completion, update the
+        # desired pose and call doTask again
+        sim.doTask('Hand', desiredPoseHand, 0.005)
+
+    elif (flag==1):
+        # When using rosrun (noninteractive) the following is recommended
+        t = 0; dt = 1.0/f
+        while not rospy.is_shutdown():
+            # Write the logs
+            fhpos.write(str(t)+' ')
+            fhposdes.write(str(t)+' ')
+            fjoints.write(str(t)+' ')
+            xsensed = sim.task['Hand'].getSensedValue()
+            xdes = sim.task['Hand'].getDesiredValue()
+            for i in xrange(sim.task['Hand'].getTaskDim()):
+                fhpos.write(str(xsensed[i,0])+' ')
+                fhposdes.write(str(xdes[i,0])+' ')
+            for i in xrange(sim.robot.ndof):
+                fjoints.write(str(q[i,0])+' ')
+            fhpos.write('\n')
+            fhposdes.write('\n')
+            fjoints.write('\n')
+
+            tic = time.time()
+            qdes = sim.getPositionControl(q)
+            sim.update(qdes)
+            q = qdes.copy()
+            toc = time.time()
+            # Log for the control time
+            dtcontrol = 1000*(toc-tic) # in miliseconds
+            fsolvertime.write(str(dtcontrol) + '\n')
+            #print dtcontrol, 'ms'
+            t += dt
+            sim.rate.sleep()
+
+

@@ -1,0 +1,195 @@
+#!/usr/bin/env python
+#
+# Generate kinematic motion to control the position/orientation of KUKA's
+# KR-5 robot
+#
+# To use it:
+#     1) roslaunch kr5_oscr display.launch
+#     2) + Option 1 (interactive):
+#          roscd kr5_oscr/scripts; ipython -i motion_examples
+#        + Option 2:
+#          rosrun kr5_oscr motion_examples --mtype 1
+#
+
+
+from optparse import OptionParser
+import numpy as np
+import time
+import rospy
+
+from nav_msgs.msg import Path
+from geometry_msgs.msg import PoseStamped
+
+from oscr.utils import incPoseLocal, setPose, incPosition, quaternionFromAxisAngle
+from oscr.ros_kine_sim import RosKineSim
+from oscr.ros_logs import RosLogs
+
+
+# Different motions
+#  * mtype=0 does not move (useful for interactive motion)
+#  * mtype=1 moves the end effector to a given pose
+#  * mtype=2 moves the end effector along a line in operational space
+#  * mtype=3 moves the end effector describing a circle
+
+
+if __name__ == '__main__':
+
+    # Parse the arguments
+    parser = OptionParser()
+    parser.add_option("--back", dest="back", default="pin",
+                      help="back can be pin (default) or rbdl")
+    parser.add_option("--mtype", dest="mtype", default="3",
+                      help="type of motion: 0, 1, 2, 3")
+    parser.add_option("--solver", dest="solver", default="hqp",
+                      help="solver can be hqp (default), ns (nullspace) or \
+                      wqp (weighted qp")
+    parser.add_option("--log", dest="log", default="false",
+                      help="log can be back can be true, or false (default)")
+    (options, args) = parser.parse_args()
+    # Backend: 'pin' (default) or 'rbdl'
+    backend = options.back
+    # Solver
+    solvertype = options.solver
+    # Motion type
+    mtype = eval(options.mtype)
+    # Logs
+    if (options.log=='true'): do_logs = True
+    else: do_logs = False
+    
+    # This robot does not have a floating base
+    fbase = False
+    # Frequency
+    f = 100.0
+    # Robot simulation instance (choose as backend 'pin' or 'rbdl')
+    sim = RosKineSim('kr5ModelPy', 'kuka_kr5_support',
+                     '/urdf/kr5_arc.urdf', f, fbase, backend, show_markers=True)
+
+    # Set initial joint configuration
+    if (mtype==0):
+        #q = np.array([[0., -0.877, 1.876, 0., -0.2, 0.]]).T
+        q = np.array([[0., -0.87122, 1.87624, -3.15933, -0.56774, 3.15862]]).T
+        #q = np.array([[0., -0.87122, 1.87624, -3.15933, 1.0, 3.15862]]).T
+    if (mtype==1):
+        q = np.array([[0., -0.7, 1.5, 0., 0., 0.]]).T
+    elif (mtype==2):
+        q = np.array([[-0.461, -0.729, 1.605, -3.151, -0.691, 2.69]]).T
+    elif (mtype==3):
+        q = np.array([[-0.381, -0.967, 1.651, -3.706, 0.768, 3.569]]).T
+    sim.update(q)
+
+    # Initialize solver: use 'HQP', 'NS' or 'WQP'
+    if solvertype == 'hqp': sim.initKineSolver(q)  # default is HQP
+    elif solvertype == 'ns': sim.initKineSolver(q, 'NS')
+    elif solvertype == 'wqp': sim.initKineSolver(q, 'WQP')
+    else: print 'Solver type not supported'
+
+    # Tasks
+    gain = 0.5
+    sim.initKineTaskPose('link_6', 'pose', 'Hand', gain)
+
+    # Add logs
+    #log = RosLogs('../../data/', 'kr5_f'+str(mtype)+'_', f, do_logs)
+    log = RosLogs('/tmp/', 'kr5_k.5_f'+str(mtype)+'_', f, do_logs)
+    log.addTask(sim.task['Hand'])
+
+    if (mtype==0):
+        currentPoseHand = sim.task['Hand'].getSensedValue()
+        desiredPoseHand = currentPoseHand.copy()
+        sim.task['Hand'].setDesiredValue(desiredPoseHand)
+        sim.pushTask(sim.task['Hand'])
+        for i in xrange(50):
+            qdes = sim.getPositionControl(q)
+            sim.update(qdes)
+            q = qdes.copy()
+            sim.rate.sleep()
+        sim.doTask('Hand', currentPoseHand, 0.005)
+
+
+    if (mtype==1):
+        # Set desired pose for the Hand (end effector)
+        currentPoseHand = sim.task['Hand'].getSensedValue()
+        desiredPoseHand = incPoseLocal(currentPoseHand,
+                                       (-0.50, 0.50, 0.50),
+                                       (70.0, (0.,1.,0.)))
+        sim.task['Hand'].setDesiredValue(desiredPoseHand)
+        # Add task to the solver
+        sim.pushTask(sim.task['Hand'])
+
+        while not rospy.is_shutdown():
+            # Write the logs
+            log.save(q)
+            tic = time.time()
+            qdes = sim.getPositionControl(q)
+            sim.update(qdes)
+            q = qdes.copy()
+            toc = time.time()
+            # Log for the control time
+            log.savetime(tic, toc, False)
+            # Wait for synchronization
+            sim.rate.sleep()
+        log.close()
+
+    if (mtype==2):
+        # Set desired pose for the Hand (end effector)
+        currentPoseHand = sim.task['Hand'].getSensedValue()
+        orient = currentPoseHand[3:]
+        xo = currentPoseHand[:3].copy()
+        xf = xo + np.array([[0.0, -1.0, 0.0]]).T
+        # Add task to the solver
+        sim.pushTask(sim.task['Hand'])
+
+        t = 0; incr = 0.002
+        while not rospy.is_shutdown():
+            xi = xo + t*(xf-xo)
+            t += incr
+            if (t<1):
+                desiredPoseHand = np.vstack((xi, orient))
+            sim.task['Hand'].setDesiredValue(desiredPoseHand)
+            # Write the logs
+            log.save(q)
+            tic = time.time()
+            qdes = sim.getPositionControl(q)
+            sim.update(qdes)
+            q = qdes.copy()
+            toc = time.time()
+            # Log for the control time
+            log.savetime(tic, toc, False)
+            # Wait for synchronization
+            sim.rate.sleep()
+        log.close()
+
+    if (mtype==3):
+        # Set desired pose for the Hand (end effector)
+        currentPoseHand = sim.task['Hand'].getSensedValue()
+        # orient = currentPoseHand[3:]
+        #xi = currentPoseHand[:3].copy()
+        xi = currentPoseHand.copy()
+        yinit = xi[1,0]
+        zinit = xi[2,0]
+        # Increase the task gain
+        sim.task['Hand'].setGain(10.0)
+        # Add task to the solver
+        sim.pushTask(sim.task['Hand'])
+
+        th = 0; incr = 0.004
+        r = 0.2
+        while not rospy.is_shutdown():
+            xi[1] = yinit + r*np.cos(th) -r
+            xi[2] = zinit + r*np.sin(th)
+            th += incr
+            if (th<2*np.pi):
+                #desiredPoseHand = np.vstack((xi, orient))
+                desiredPoseHand = xi.copy()
+            sim.task['Hand'].setDesiredValue(desiredPoseHand)
+            # Write the logs
+            log.save(q)
+            tic = time.time()
+            qdes = sim.getPositionControl(q)
+            sim.update(qdes)
+            q = qdes.copy()
+            toc = time.time()
+            # Log for the control time
+            log.savetime(tic, toc, False)
+            # Wait for synchronization
+            sim.rate.sleep()
+        log.close()

@@ -1,0 +1,51 @@
+#!/usr/bin/env python
+#
+# Test the model of KUKA's KR5 robot
+#
+# To use it:
+#     1) roslaunch kr5_oscr display.launch
+#     2) + Option 1 (interactive):
+#              roscd kr5_oscr/scripts
+#              ipython -i model_parse
+#        + Option 2:
+#              rosrun kr5_oscr model_parse
+#
+
+
+from oscr.ros_robot import RosRobot
+import numpy as np
+
+
+if __name__ == '__main__':
+
+    # This robot does not have a floating base
+    fbase = False
+    # Frequency
+    f = 100.0
+    # Robot simulation instance (Backend: 'pin' or 'rbdl')
+    robot = RosRobot('kr5ModelPy', 'kuka_kr5_support',
+                     '/urdf/kr5_arc.urdf', f, fbase, 'pin',)
+    # Print robot model information
+    robot.printModelInfo()
+
+    # Joint configuration
+    q = np.array([[0., -0.7, 1.5, 0., 0., 0.]]).T
+    robot.update(q)
+
+    # # Print positions
+    position1 = robot.linkPosition(robot.mlink['link_6'])
+    position2 = robot.linkPosition(robot.mlink['link_3'])
+    print "Link 6 (end effector) position: ", position1.transpose()
+    print "Link 3 (elbow) position: ", position2.transpose()
+
+    # Ball markers
+    robot.initRobotBallMarkers(['RED','GREEN'], ['link_6','link_3'])
+    # Frame markers
+    robot.initRobotFrameMarkers([1.0, 1.0],['link_6','link_3'])
+
+    # Example of joint motion
+    for k in range(1000):
+        q[1] = q[1] - 0.001
+        q[2] = q[2] + 0.0005
+        robot.updateWithMarkers(q)
+        robot.rate.sleep()
